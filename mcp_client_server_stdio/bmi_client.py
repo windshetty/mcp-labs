@@ -74,4 +74,4 @@ async def run(query: str):
 if __name__ == "__main__":
     query = "Calculate BMI for a person with weight 70kg and height 1.75m"
     asyncio.run(run(query))
-           
+    

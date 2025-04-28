@@ -1,0 +1,7 @@
+mcp[cli]
+openai
+fastapi
+python-dotenv
+loguru # or use logging
+requests
+pytz

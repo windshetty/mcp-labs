@@ -7,6 +7,8 @@ __pycache__/
 
 .env
 
+mcp_client_server_sse_stdio/
+
 # C extensions
 *.so
 
