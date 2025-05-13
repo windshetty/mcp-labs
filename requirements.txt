@@ -5,3 +5,7 @@ python-dotenv
 loguru # or use logging
 requests
 pytz
+streamlit
+websockets
+websocket-client
+pydantic
