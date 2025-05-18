@@ -9,3 +9,5 @@ streamlit
 websockets
 websocket-client
 pydantic
+aiohttp
+pyjwt

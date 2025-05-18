@@ -1,7 +1,7 @@
 import datetime
 import os
 from zoneinfo import ZoneInfo
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 
 import requests
 from starlette.applications import Starlette
@@ -53,8 +53,34 @@ def weather_tool(location: str):
         return f"The weather in {location} is currently {description} with a temperature of {temp}°C."
     else:
         return f"Sorry, I couldn't find weather information for {location}."
+    
+def check_auth(request: Request):
+    auth = request.headers.get("authorization", "")
+    api_key = request.headers.get("x-api-key")
+    # Basic Auth (username:password is 'user1:pass1')
+    if auth.startswith("Basic "):
+        import base64
+        encoded = auth.split(" ", 1)[1]
+        user_pass = base64.b64decode(encoded).decode()
+        if user_pass == "user1:pass1":
+            return True
+    # Bearer Token / JWT (secret key "secretjwt")
+    if auth.startswith("Bearer "):
+        token = auth.split(" ", 1)[1]
+        try:
+            import jwt
+            payload = jwt.decode(token, "secretjwt", algorithms=["HS256"])
+            return True
+        except Exception:
+            raise HTTPException(status_code=401, detail="Invalid token")
+    # API Key (header "X-API-Key: secretkey")
+    if api_key == "secretkey":
+        return True
+    # If no valid auth provided
+    raise HTTPException(status_code=401, detail="Unauthorized")
 
 async def handle_sse(request):
+    check_auth(request=request)
     # Prepare bidirectional streams over SSE
     async with transport.connect_sse(
         request.scope,
