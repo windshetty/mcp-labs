@@ -14,7 +14,9 @@ def calculate_bmi(weight_kg:float, height_m:float) -> float:
     
     if height_m <= 0:
         raise ValueError("Height must be greater than zero.")
-    return f"The BMI is {weight_kg / (height_m ** 2)}"
+    result = weight_kg / (height_m ** 2)
+    return f"{int(result)}"
+    # return f"The BMI is {result:.2f}."
 
 
 if __name__ == "__main__":

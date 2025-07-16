@@ -2,13 +2,17 @@ import ast
 import asyncio
 import json
 import os
+import re
 from typing import Dict, Optional, Union
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from mcp import ClientSession, StdioServerParameters, stdio_client
 from mcp.client.sse import sse_client
+from fastmcp import Client
+from fastmcp.client.transports import StreamableHttpTransport
 from openai import OpenAI
+import ollama
 import mcp.client.sse as _sse_mod
 from httpx import AsyncClient as _BaseAsyncClient
 from loguru import logger
@@ -27,21 +31,30 @@ async def _patched_request(self, method, url, *args, **kwargs):
 
 httpx.AsyncClient.request = _patched_request
 def llm_client(message: str):
-    client = OpenAI()
+    response = ollama.chat(model='llama3.2', messages=[
+        {"role": "system", "content": "You are an intelligent Assistant. You will execute tasks as instructed"},
+        {
+            'role': 'user',
+            'content': message,
+        },
+    ])
+    return response['message']['content']
 
-    completion = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "You are an intelligent Assistant. You will execute tasks as instructed"},
-            {
-                "role": "user",
-                "content": message,
-            },
-        ]
-    )
+    # client = OpenAI()
 
-    result = completion.choices[0].message.content
-    return result
+    # completion = client.chat.completions.create(
+    #     model="gpt-4o-mini",
+    #     messages=[
+    #         {"role": "system", "content": "You are an intelligent Assistant. You will execute tasks as instructed"},
+    #         {
+    #             "role": "user",
+    #             "content": message,
+    #         },
+    #     ]
+    # )
+
+    # result = completion.choices[0].message.content
+    # return result
 
 
 
@@ -58,7 +71,7 @@ def get_prompt_to_identify_tool_and_arguments(query:str, tool_list:list, context
                 "IMPORTANT: Always identify a single tool only."
                 "IMPORTANT: When you need to use a tool, you must ONLY respond with "                
                 "the exact JSON object format below, DO NOT ADD any other comment.:\n"
-                "Keep the values in str "
+                "Format the response strictly as follows:\n"
                 "{\n"
                 '    "tool": "tool-name",\n'
                 '    "arguments": {\n'
@@ -120,6 +133,23 @@ class ToolList:
             logger.error(f"Error getting tool context: {str(e)}")
             return None
 
+    async def streamable_http_get_tools(self, streamable_http_url:str):
+        try:
+            logger.info("Starting HTTP ops {streamable_http_url}")
+            transport = StreamableHttpTransport(streamable_http_url)
+            # 2) Create an MCP session over those streams
+            async with Client(transport=transport) as client:
+                # 3) Initialize
+                info = await client.ping()
+                # logger.info(f"Connected to {info.serverInfo.name} v{info.serverInfo.version}")
+                # 4) List tools
+                tools = await client.list_tools()
+                return {"MCP Server Streaming HTTP": tools}
+        except Exception as e:
+            # Handle the exception, e.g., log the error and return an error message
+            logger.error(f"Error getting tool context: {str(e)}")
+            return None
+        
     async def stdio_get_tools(self, server_params):
         try:
             logger.info("Starting stdio ops")
@@ -139,6 +169,7 @@ class ToolList:
         try:
             stdio_server_params = mcp_server_config._get_server_params_list()
             sse_urls = mcp_server_config._get_sse_urls()
+            streamable_http_urls = mcp_server_config._get_streamable_http_urls()
             
             tool_context = []
             
@@ -148,14 +179,19 @@ class ToolList:
                 tool_context.append(tool_map)
                                
             
-            for sse_url in sse_urls:
-                sse_tools = await self.sse_get_tools(sse_url=sse_url)
-                # tools = tool_context["sse"]
-                # tools.extend(sse_tools.tools)                
-                #tool_context["sse"]=sse_tools
-                tool_map = ToolMap(server_type="sse", tool=sse_tools, params=sse_url)
+            # for sse_url in sse_urls:
+            #     sse_tools = await self.sse_get_tools(sse_url=sse_url)
+            #     # tools = tool_context["sse"]
+            #     # tools.extend(sse_tools.tools)                
+            #     #tool_context["sse"]=sse_tools
+            #     tool_map = ToolMap(server_type="sse", tool=sse_tools, params=sse_url)
+            #     tool_context.append(tool_map)
+                
+            for streamable_http_url in streamable_http_urls:
+                streamable_http_tools = await self.streamable_http_get_tools(streamable_http_url=streamable_http_url)
+                tool_map = ToolMap(server_type="streamable-http", tool=streamable_http_tools, params=streamable_http_url)
                 tool_context.append(tool_map)
-            
+
             print(tool_context)
             
             return tool_context
@@ -221,11 +257,36 @@ class ExecuteTool:
             logger.error(f"Error getting tool context: {str(e)}")
             return None
 
+    async def streamable_http_call_tool(self, query:str, memory:list, tool_call: dict, sse_url):
+        try:
+            logger.info(f"Starting streamable HTTP ops {sse_url}")
+            #sse_url = "http://localhost:8100/sse"
+
+            # 1) Open SSE → yields (in_stream, out_stream)
+            # async with sse_client(url=sse_url) as (in_stream, out_stream):
+                # 2) Create an MCP session over those streams
+            transport = StreamableHttpTransport(sse_url)
+            async with Client(transport=transport) as client:
+                # 3) Initialize
+                info = await client.ping()
+               # logger.info(f"Connected to {info.serverInfo.name} v{info.serverInfo.version}")
+
+                result = await client.call_tool(tool_call["tool"], arguments=tool_call["arguments"])
+                print(result)
+                tool_response = result.content[0].text
+                return self.process_tool_response(tool_response=tool_response, query=query, memory=memory)
+                
+        except Exception as e:
+            # Handle the exception, e.g., log the error and return an error message
+            logger.error(f"Error getting tool context: {str(e)}")
+            return None
+
 
 class MCPServerConfig:
     def __init__(self):
         self.server_params_list = []
         self.sse_urls = []
+        self.streamable_http_urls = []
         
     def _add_server_params(self, server_params:list[StdioServerParameters]):
         self.server_params_list.extend(server_params)
@@ -233,12 +294,17 @@ class MCPServerConfig:
     def _add_sse_url(self, sse_urls:list[str]):
         self.sse_urls.extend(sse_urls)
     
+    def _add_streamable_http_url(self, streamable_http_urls:list[str]):
+        self.streamable_http_urls.extend(streamable_http_urls)
+
     def _get_server_params_list(self):
         return self.server_params_list
     
     def _get_sse_urls(self):
         return self.sse_urls
     
+    def _get_streamable_http_urls(self):
+        return self.streamable_http_urls
 
 
 
@@ -253,16 +319,20 @@ async def chat_agent(query:str, memory:list,tool_context:list[ToolMap]):
     
     response = llm_client(prompt)
     logger.info(f"Response from LLM {response}")
-    
+
+    response = re.sub(r',\s*([\]}])', r'\1', response)  # Remove trailing commas
     tool_call = json.loads(response)    
     
-    tool_name = tool_call["tool"]    
+    tool_name = tool_call["tool"]
+    logger.info(f"Tool identified by LLM: {tool_name}")    
     execute_tool_ops = ExecuteTool()
     
     for tool_map in tool_context:
         if tool_name in [tool.name for tool_list in tool_map.tool.values() for tool in tool_list]:
             if tool_map.server_type == "sse":
                 result = await execute_tool_ops.sse_call_tool(query=query,memory=memory, tool_call=tool_call, sse_url=tool_map.params)
+            elif tool_map.server_type == "streamable-http":
+                result = await execute_tool_ops.streamable_http_call_tool(query=query,memory=memory, tool_call=tool_call, sse_url=tool_map.params)
             elif tool_map.server_type == "stdio":
                 result = await execute_tool_ops.stdio_call_tool(query=query,memory=memory, tool_call=tool_call, server_params=tool_map.params)
             break
@@ -333,14 +403,17 @@ async def chat_endpoint(websocket: WebSocket):
 if __name__ == "__main__":
     
     sse_urls = ["http://localhost:8100/sse"]
+    streamable_http_urls = ["http://localhost:8100/mcp/"]
     stdio_server_params = [StdioServerParameters(
-                        command="python",
+                        command="python3",
                         ##Change the path as per your settings
-                        args=["C:\\Users\\Zahiruddin_T\\Documents\\LocalDriveProjects\\MCP\\mcp-labs\\mcp_client_server_stdio\\bmi_server.py"])
+                        args=["/Users/pshetty/experiments/mcp-labs/mcp_client_server_stdio/bmi_server.py"])
                            ]
     mcp_server_config = MCPServerConfig()
     mcp_server_config._add_server_params(server_params=stdio_server_params)
-    mcp_server_config._add_sse_url(sse_urls=sse_urls)    
-    
+    mcp_server_config._add_sse_url(sse_urls=sse_urls)
+    mcp_server_config._add_streamable_http_url(streamable_http_urls=streamable_http_urls)
+
+
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8200)

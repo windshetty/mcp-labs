@@ -1,5 +1,5 @@
 mcp[cli]
-openai
+ollama
 fastapi
 python-dotenv
 loguru # or use logging
